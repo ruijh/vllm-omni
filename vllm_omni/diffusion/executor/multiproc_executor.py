@@ -9,6 +9,7 @@ import multiprocessing as mp
 import multiprocessing.connection
 import os
 import queue
+import signal
 import threading
 import time
 import weakref
@@ -51,6 +52,24 @@ _WORKER_KILL_GRACE_S = 5.0
 _RESULT_PUMP_JOIN_TIMEOUT_S = 2.0
 # Upper bound on remembered dropped async_output_ids (see drop_output).
 _DROPPED_OUTPUT_IDS_MAX = 4096
+_WORKER_EXIT_JOIN_TIMEOUT_S = 2.0
+
+
+def _format_worker_exit(process: mp.Process) -> str:
+    """Format an exited worker, preserving the exit cause for diagnostics."""
+    process.join(_WORKER_EXIT_JOIN_TIMEOUT_S)
+    code = process.exitcode
+    if code is None:
+        return f"{process.name}(exitcode=unknown, alive={process.is_alive()})"
+
+    if code < 0:
+        try:
+            signal_name = signal.Signals(-code).name
+        except ValueError:
+            signal_name = f"signal {-code}"
+        return f"{process.name}(exitcode={code}, {signal_name})"
+
+    return f"{process.name}(exitcode={code})"
 
 
 class _DropPlaceholder(concurrent.futures.Future):
@@ -467,22 +486,7 @@ class MultiprocDiffusionExecutor(DiffusionExecutor):
 
             dead = [p for p in self._processes if p.sentinel in finished]
             if dead:
-                details = []
-                for p in dead:
-                    code = p.exitcode
-                    # Negative exitcode == killed by signal N (-9 = SIGKILL/OOM,
-                    # -11 = SIGSEGV). Surface this so callers don't only see
-                    # "died unexpectedly" with no root cause.
-                    if code is not None and code < 0:
-                        try:
-                            import signal as _signal
-
-                            sig = _signal.Signals(-code).name
-                        except (ValueError, ImportError):
-                            sig = f"signal {-code}"
-                        details.append(f"{p.name}(exitcode={code}, {sig})")
-                    else:
-                        details.append(f"{p.name}(exitcode={code})")
+                details = [_format_worker_exit(p) for p in dead]
                 logger.error(
                     "Diffusion worker(s) died unexpectedly: %s",
                     details,

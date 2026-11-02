@@ -20,7 +20,7 @@ from vllm.v1.engine.exceptions import EngineDeadError
 import vllm_omni.diffusion.worker.diffusion_worker as diffusion_worker_module
 from vllm_omni.diffusion.data import DiffusionOutput
 from vllm_omni.diffusion.diffusion_engine import DiffusionEngine
-from vllm_omni.diffusion.executor.multiproc_executor import MultiprocDiffusionExecutor
+from vllm_omni.diffusion.executor.multiproc_executor import MultiprocDiffusionExecutor, _format_worker_exit
 from vllm_omni.diffusion.ipc import DIFFUSION_RPC_RESULT_ENVELOPE
 from vllm_omni.diffusion.request import OmniDiffusionRequest
 from vllm_omni.diffusion.sched import RequestScheduler
@@ -1757,6 +1757,23 @@ class TestMultiprocExecutorWorkerMonitor:
         assert not executor._is_failed, "_is_failed should remain False on orderly shutdown"
         # Orderly close still reports dead via the public accessor.
         assert executor.is_dead
+
+    def test_exit_formatter_preserves_signal_name(self):
+        proc = Mock()
+        proc.join = Mock(return_value=None)
+        proc.exitcode = -9
+        proc.name = "DiffusionWorker-0"
+
+        assert _format_worker_exit(proc) == "DiffusionWorker-0(exitcode=-9, SIGKILL)"
+
+    def test_exit_formatter_reports_unreaped_worker(self):
+        proc = Mock()
+        proc.join = Mock(return_value=None)
+        proc.exitcode = None
+        proc.is_alive = Mock(return_value=False)
+        proc.name = "DiffusionWorker-0"
+
+        assert _format_worker_exit(proc) == "DiffusionWorker-0(exitcode=unknown, alive=False)"
 
 
 class TestStageDiffusionClientProcMonitor:
